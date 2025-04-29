@@ -4,10 +4,12 @@ import org.example.user.User;
 import org.hibernate.Session;
 import org.hibernate.SessionFactory;
 import org.hibernate.Transaction;
+import org.hibernate.resource.transaction.spi.TransactionStatus;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
 import java.util.Optional;
+import java.util.function.Supplier;
 
 @Service
 public class AccountService {
@@ -20,74 +22,93 @@ public class AccountService {
         this.accountProperties = accountProperties;
     }
 
-    public Account createAccount(User user) {
-        Session session = sessionFactory.openSession();
-        Transaction tx = session.beginTransaction();
+    private <T> T executeInTransaction(Supplier<T> action) {
+        Session session = sessionFactory.getCurrentSession();
+        Transaction transaction = session.getTransaction();
+
+        boolean isNewTransaction = transaction.getStatus() == TransactionStatus.NOT_ACTIVE;
+        if (isNewTransaction) {
+            session.beginTransaction();
+        }
 
         try {
+            T result = action.get();
+            if (isNewTransaction) {
+                transaction.commit();
+            }
+            return result;
+        } catch (Exception e) {
+            if (isNewTransaction && transaction.getStatus().canRollback()) {
+                transaction.rollback();
+            }
+            throw new RuntimeException("Transaction failed", e);
+        } finally {
+            if (isNewTransaction && session.isOpen()) {
+                session.close();
+            }
+        }
+    }
+
+    public Account createAccount(User user) {
+        return executeInTransaction(() -> {
+            Session session = sessionFactory.getCurrentSession();
             Account account = new Account(user, accountProperties.getDefaultAccountAmount());
             session.save(account);
-            tx.commit();
             return account;
-        } catch (Exception e) {
-            tx.rollback();
-            throw new RuntimeException("Failed to create account", e);
-        } finally {
-            session.close();
-        }
+        });
     }
 
     public Optional<Account> findAccountById(Long id) {
-        try (Session session = sessionFactory.openSession()) {
+        return executeInTransaction(() -> {
+            Session session = sessionFactory.getCurrentSession();
             return Optional.ofNullable(session.get(Account.class, id));
-        }
+        });
     }
 
     public List<Account> getAllAccounts(Long userId) {
-        try (Session session = sessionFactory.openSession()) {
-            return session.createQuery(
-                            "FROM Account WHERE user.id = :userId", Account.class)
+        return executeInTransaction(() -> {
+            Session session = sessionFactory.getCurrentSession();
+            return session.createQuery("FROM Account WHERE user.id = :userId", Account.class)
                     .setParameter("userId", userId)
                     .getResultList();
-        }
+        });
     }
 
     public void depositAccount(Long accountId, int moneyToDeposit) {
         if (moneyToDeposit <= 0)
             throw new IllegalArgumentException("Deposit amount must be positive");
 
-        try (Session session = sessionFactory.openSession()) {
-            Transaction tx = session.beginTransaction();
+        executeInTransaction(() -> {
+            Session session = sessionFactory.getCurrentSession();
             Account account = session.get(Account.class, accountId);
             if (account == null) {
                 throw new IllegalArgumentException("No such account id=" + accountId);
             }
             account.setMoneyAmmount(account.getMoneyAmmount() + moneyToDeposit);
             session.update(account);
-            tx.commit();
-        }
+            return null;
+        });
     }
 
     public void withdrawFromAccount(Long accountId, int amountToWithdraw) {
         if (amountToWithdraw <= 0)
             throw new IllegalArgumentException("Withdraw amount must be positive");
 
-        try (Session session = sessionFactory.openSession()) {
-            Transaction tx = session.beginTransaction();
+        executeInTransaction(() -> {
+            Session session = sessionFactory.getCurrentSession();
             Account account = session.get(Account.class, accountId);
             if (account == null || account.getMoneyAmmount() < amountToWithdraw) {
                 throw new IllegalArgumentException("Not enough funds or no such account");
             }
             account.setMoneyAmmount(account.getMoneyAmmount() - amountToWithdraw);
             session.update(account);
-            tx.commit();
-        }
+            return null;
+        });
     }
 
     public Account closeAccount(Long accountId) {
-        try (Session session = sessionFactory.openSession()) {
-            Transaction tx = session.beginTransaction();
-
+        return executeInTransaction(() -> {
+            Session session = sessionFactory.getCurrentSession();
             Account accountToRemove = session.get(Account.class, accountId);
             if (accountToRemove == null) {
                 throw new IllegalArgumentException("No such account id=" + accountId);
@@ -108,17 +129,16 @@ public class AccountService {
             session.update(accountToDeposit);
             session.remove(accountToRemove);
 
-            tx.commit();
             return accountToRemove;
-        }
+        });
     }
 
     public void transfer(Long fromAccountId, Long toAccountId, int amountToTransfer) {
         if (amountToTransfer <= 0)
             throw new IllegalArgumentException("Transfer amount must be positive");
 
-        try (Session session = sessionFactory.openSession()) {
-            Transaction tx = session.beginTransaction();
+        executeInTransaction(() -> {
+            Session session = sessionFactory.getCurrentSession();
 
             Account from = session.get(Account.class, fromAccountId);
             Account to = session.get(Account.class, toAccountId);
@@ -139,7 +159,7 @@ public class AccountService {
             session.update(from);
             session.update(to);
 
-            tx.commit();
-        }
+            return null;
+        });
     }
 }
