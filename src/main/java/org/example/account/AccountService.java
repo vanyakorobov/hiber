@@ -1,56 +1,31 @@
 package org.example.account;
 
+import org.example.TransactionService;
 import org.example.user.User;
 import org.hibernate.Session;
 import org.hibernate.SessionFactory;
-import org.hibernate.Transaction;
-import org.hibernate.resource.transaction.spi.TransactionStatus;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
 import java.util.Optional;
-import java.util.function.Supplier;
 
 @Service
 public class AccountService {
 
     private final SessionFactory sessionFactory;
     private final AccountProperties accountProperties;
+    private final TransactionService transactionService;
 
-    public AccountService(SessionFactory sessionFactory, AccountProperties accountProperties) {
+    public AccountService(SessionFactory sessionFactory,
+                          AccountProperties accountProperties,
+                          TransactionService transactionService) {
         this.sessionFactory = sessionFactory;
         this.accountProperties = accountProperties;
-    }
-
-    private <T> T executeInTransaction(Supplier<T> action) {
-        Session session = sessionFactory.getCurrentSession();
-        Transaction transaction = session.getTransaction();
-
-        boolean isNewTransaction = transaction.getStatus() == TransactionStatus.NOT_ACTIVE;
-        if (isNewTransaction) {
-            session.beginTransaction();
-        }
-
-        try {
-            T result = action.get();
-            if (isNewTransaction) {
-                transaction.commit();
-            }
-            return result;
-        } catch (Exception e) {
-            if (isNewTransaction && transaction.getStatus().canRollback()) {
-                transaction.rollback();
-            }
-            throw new RuntimeException("Transaction failed", e);
-        } finally {
-            if (isNewTransaction && session.isOpen()) {
-                session.close();
-            }
-        }
+        this.transactionService = transactionService;
     }
 
     public Account createAccount(User user) {
-        return executeInTransaction(() -> {
+        return transactionService.executeInTransaction(() -> {
             Session session = sessionFactory.getCurrentSession();
             Account account = new Account(user, accountProperties.getDefaultAccountAmount());
             session.save(account);
@@ -59,14 +34,14 @@ public class AccountService {
     }
 
     public Optional<Account> findAccountById(Long id) {
-        return executeInTransaction(() -> {
+        return transactionService.executeInTransaction(() -> {
             Session session = sessionFactory.getCurrentSession();
             return Optional.ofNullable(session.get(Account.class, id));
         });
     }
 
     public List<Account> getAllAccounts(Long userId) {
-        return executeInTransaction(() -> {
+        return transactionService.executeInTransaction(() -> {
             Session session = sessionFactory.getCurrentSession();
             return session.createQuery("FROM Account WHERE user.id = :userId", Account.class)
                     .setParameter("userId", userId)
@@ -78,7 +53,7 @@ public class AccountService {
         if (moneyToDeposit <= 0)
             throw new IllegalArgumentException("Deposit amount must be positive");
 
-        executeInTransaction(() -> {
+        transactionService.executeInTransaction(() -> {
             Session session = sessionFactory.getCurrentSession();
             Account account = session.get(Account.class, accountId);
             if (account == null) {
@@ -94,7 +69,7 @@ public class AccountService {
         if (amountToWithdraw <= 0)
             throw new IllegalArgumentException("Withdraw amount must be positive");
 
-        executeInTransaction(() -> {
+        transactionService.executeInTransaction(() -> {
             Session session = sessionFactory.getCurrentSession();
             Account account = session.get(Account.class, accountId);
             if (account == null || account.getMoneyAmmount() < amountToWithdraw) {
@@ -107,7 +82,7 @@ public class AccountService {
     }
 
     public Account closeAccount(Long accountId) {
-        return executeInTransaction(() -> {
+        return transactionService.executeInTransaction(() -> {
             Session session = sessionFactory.getCurrentSession();
             Account accountToRemove = session.get(Account.class, accountId);
             if (accountToRemove == null) {
@@ -137,7 +112,7 @@ public class AccountService {
         if (amountToTransfer <= 0)
             throw new IllegalArgumentException("Transfer amount must be positive");
 
-        executeInTransaction(() -> {
+        transactionService.executeInTransaction(() -> {
             Session session = sessionFactory.getCurrentSession();
 
             Account from = session.get(Account.class, fromAccountId);
